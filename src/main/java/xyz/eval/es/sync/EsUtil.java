@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -145,7 +146,7 @@ public class EsUtil {
 
     private static String createIndex(final Client client, final JsonParser jp) throws IOException {
         if (jp.getCurrentToken() == JsonToken.FIELD_NAME) {
-            final ImmutableSettings.Builder builder = ImmutableSettings.settingsBuilder().put("number_of_shards", 1).put("number_of_replicas", 0);
+            final ImmutableSettings.Builder builder = ImmutableSettings.settingsBuilder().put("number_of_shards", 2).put("number_of_replicas", 0);
             client.admin().indices().prepareCreate(jp.getCurrentName()).setSettings(builder).get();
             client.admin().cluster().prepareHealth().setWaitForYellowStatus().setTimeout(TimeValue.timeValueMinutes(1)).execute().actionGet();
             return jp.getCurrentName();
@@ -162,7 +163,7 @@ public class EsUtil {
         }
     }
 
-    private static void persistDocuments(final Client client, final String index, final JsonParser jp) throws JsonProcessingException, IOException {
+    private static void persistDocuments(final Client client, final String index, final long count, final JsonParser jp) throws JsonProcessingException, IOException {
         if (jp.nextToken() == JsonToken.START_OBJECT) {
             long cnt = 0;
             boolean empty = false;
@@ -174,6 +175,7 @@ public class EsUtil {
                     bulk.add(client.prepareIndex(index, type).setSource(readNextValueAs(new TypeReference<Map<String, Object>>() {
                     }, jp)));
                     if (empty = ++cnt % BATCH_SIZE == 0) {
+                        LOG.info(String.format("%d of %d documents remaining", count - cnt, count));
                         bulk.get();
                         bulk = client.prepareBulk();
                     }
@@ -193,12 +195,15 @@ public class EsUtil {
     }
 
     public static void read(final Client client, final String source) throws Exception, IOException {
+        LOG.info("Counting documents");
+        final Map<String, Long> documentCount = count(client, source);
         try (JsonParser jp = new ObjectMapper().getFactory().createParser(new FileReader(source))) {
             if (jp.nextToken() != JsonToken.START_OBJECT) {
                 throw new RuntimeException("invalid json");
             }
             while (jp.nextToken() == JsonToken.FIELD_NAME) { //index
                 final String index = createIndex(client, jp);
+                LOG.info(String.format("index %s created", index));
                 if (jp.nextToken() != JsonToken.START_OBJECT) {
                     throw new RuntimeException("invalid json");
                 }
@@ -206,9 +211,11 @@ public class EsUtil {
                     switch (jp.getCurrentName()) {
                     case "mappings":
                         persistMappings(client, index, jp);
+                        LOG.info("mappings created");
                         break;
                     case "documents":
-                        persistDocuments(client, index, jp);
+                        LOG.info(String.format("Going to persist %d documents to %s", documentCount.get(index), index));
+                        persistDocuments(client, index, documentCount.get(index), jp);
                         break;
                     default:
                         throw new RuntimeException("unknown filed " + jp.getCurrentName());
@@ -221,9 +228,49 @@ public class EsUtil {
         }
     }
 
-
-
-
+    public static Map<String, Long> count(final Client client, final String source) throws Exception, IOException {
+        final Map<String, Long> documentCount = new HashMap<>();
+        try (JsonParser jp = new ObjectMapper().getFactory().createParser(new FileReader(source))) {
+            if (jp.nextToken() != JsonToken.START_OBJECT) {
+                throw new RuntimeException("invalid json");
+            }
+            while (jp.nextToken() == JsonToken.FIELD_NAME) { //index
+                final String index = jp.getCurrentName();
+                documentCount.put(index, 0L);
+                if (jp.nextToken() != JsonToken.START_OBJECT) {
+                    throw new RuntimeException("invalid json");
+                }
+                while (jp.nextToken() == JsonToken.FIELD_NAME) {
+                    switch (jp.getCurrentName()) {
+                    case "mappings":
+                        if (jp.nextToken() == JsonToken.START_OBJECT) {
+                            jp.skipChildren();
+                        }
+                        break;
+                    case "documents":
+                        if (jp.nextToken() == JsonToken.START_OBJECT) {
+                            long cnt = 0;
+                            while (jp.nextToken() != JsonToken.END_OBJECT) {
+                                jp.nextToken();
+                                while (jp.nextToken() != JsonToken.END_ARRAY) {
+                                    jp.skipChildren();
+                                    cnt++;
+                                }
+                            }
+                            documentCount.put(index, cnt);
+                        }
+                        break;
+                    default:
+                        throw new RuntimeException("unknown filed " + jp.getCurrentName());
+                    }
+                }
+                if (jp.getCurrentToken() != JsonToken.END_OBJECT) {
+                    throw new RuntimeException("invalid json");
+                }
+            }
+        }
+        return documentCount;
+    }
 
     public static BoolFilterBuilder filterfromTo(final BoolFilterBuilder f, final Date d) {
         final long fromTs = getStartOfDay(d).getTime();
