@@ -51,7 +51,20 @@ import org.elasticsearch.search.SearchHit;
  * @author Y. Petrick
  */
 public class EsUtil {
+
     private static final Logger LOG = Logger.getLogger(EsUtil.class.getSimpleName());
+
+    private static TimeValue getTimeOut() {
+        return new TimeValue(5, TimeUnit.MINUTES);
+    }
+
+    private static TimeValue searchTimeOut() {
+        return new TimeValue(10, TimeUnit.MINUTES);
+    }
+
+    private static TimeValue scrollTimeOut() {
+        return new TimeValue(2, TimeUnit.MINUTES);
+    }
 
     public static Client buildClient(final String cluster, final String host, final int port) {
         final TransportClient client = new TransportClient(ImmutableSettings.settingsBuilder().put("cluster.name", cluster));
@@ -86,7 +99,7 @@ public class EsUtil {
 
     private static ImmutableOpenMap<String, MappingMetaData> getMapping(final Client client, final String index) {
         final GetMappingsRequestBuilder request = client.admin().indices().prepareGetMappings(index);
-        return request.get().getMappings().get(index);
+        return request.get(getTimeOut()).getMappings().get(index);
     }
 
     private static void dumpMappings(final Client client, final String index, final JsonGenerator jgen) throws ElasticsearchException, IOException {
@@ -99,19 +112,18 @@ public class EsUtil {
     }
 
     private static void dumpDocuments(final Client client, final String index, final JsonGenerator jgen, final QueryBuilder query) throws JsonProcessingException, IOException {
-        final int timeOut = 5;
-        final long countTotalDoc = client.prepareCount(index).get(TimeValue.timeValueMinutes(timeOut)).getCount();
+        final long countTotalDoc = client.prepareCount(index).setQuery(query).get(getTimeOut()).getCount();
         LOG.info(String.format("Going to dump %d documents", countTotalDoc));
 
         jgen.writeObjectFieldStart("documents");
         //        final ObjectMapper mapper = new ObjectMapper();
         long progress = 0;
         for (final ObjectObjectCursor<String, MappingMetaData> value : getMapping(client, index)) {
-            final long countTotalCurrentType = client.prepareCount(index).setTypes(value.value.type()).get(TimeValue.timeValueMinutes(timeOut)).getCount();
+            final long countTotalCurrentType = client.prepareCount(index).setTypes(value.value.type()).setQuery(query).get(getTimeOut()).getCount();
             LOG.info(String.format("Going to dump %d %s documents", countTotalCurrentType, value.value.type()));
-            final SearchRequestBuilder rb = client.prepareSearch(index).setTypes(value.value.type()).setSearchType(SearchType.SCAN).setScroll(TimeValue.timeValueMinutes(timeOut)).setQuery(query).setSize(1000);
-            SearchResponse scrollResp = rb.execute().actionGet();
-            scrollResp = client.prepareSearchScroll(scrollResp.getScrollId()).setScroll(TimeValue.timeValueMinutes(timeOut)).execute().actionGet();
+            final SearchRequestBuilder rb = client.prepareSearch(index).setTypes(value.value.type()).setSearchType(SearchType.SCAN).setScroll(scrollTimeOut()).setQuery(query).setSize(1000).setTimeout(searchTimeOut());
+            SearchResponse scrollResp = rb.execute().actionGet(getTimeOut());
+            scrollResp = client.prepareSearchScroll(scrollResp.getScrollId()).setScroll(scrollTimeOut()).execute().actionGet(getTimeOut());
             jgen.writeArrayFieldStart(value.value.type());
             while (scrollResp.getHits().getHits().length != 0) {
                 for (final SearchHit hit : scrollResp.getHits()) {
@@ -120,7 +132,7 @@ public class EsUtil {
                 }
                 progress += scrollResp.getHits().hits().length;
                 LOG.info(String.format("%d of %d documents remaining", countTotalDoc - progress, countTotalDoc));
-                scrollResp = client.prepareSearchScroll(scrollResp.getScrollId()).setScroll(TimeValue.timeValueMinutes(timeOut)).execute().actionGet();
+                scrollResp = client.prepareSearchScroll(scrollResp.getScrollId()).setScroll(scrollTimeOut()).execute().actionGet(getTimeOut());
             }
             jgen.writeEndArray();
         }
