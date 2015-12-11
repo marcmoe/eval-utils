@@ -1,14 +1,5 @@
 package xyz.eval.es.sync;
 
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.JsonParseException;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.JsonToken;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JsonMappingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -19,6 +10,15 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonParseException;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.apache.log4j.Logger;
 import org.elasticsearch.ElasticsearchException;
@@ -127,6 +127,15 @@ public class EsUtil {
         jgen.writeEndObject();
     }
 
+    /**
+     * Dump data from an index into a dump file
+     *
+     * @param client
+     * @param index
+     * @param target
+     * @throws ElasticsearchException
+     * @throws IOException
+     */
     public static void dump(final Client client, final String index, final String target) throws ElasticsearchException, IOException {
         dump(client, index, target, QueryBuilders.matchAllQuery());
     }
@@ -183,6 +192,7 @@ public class EsUtil {
             }
             if (!empty) {
                 bulk.get();
+                LOG.info(String.format("%d of %d documents remaining", count - cnt, count));
             }
             client.admin().indices().refresh(Requests.refreshRequest()).actionGet();
         }
@@ -194,6 +204,14 @@ public class EsUtil {
         });
     }
 
+    /**
+     * Create index from dump file
+     *
+     * @param client
+     * @param source
+     * @throws Exception
+     * @throws IOException
+     */
     public static void read(final Client client, final String source) throws Exception, IOException {
         LOG.info("Counting documents");
         final Map<String, Long> documentCount = count(client, source);
